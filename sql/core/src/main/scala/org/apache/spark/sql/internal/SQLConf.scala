@@ -259,6 +259,31 @@ object SQLConf {
       .stringConf
       .createWithDefaultString("")
 
+  val PARQUET_ENABLE_HISTOGRAM = SQLConfigBuilder("spark.sql.parquet.enable.histogram")
+    .doc("to be added")
+    .booleanConf
+    .createWithDefault(false)
+
+  val PARQUET_HISTOGRAM_COL_NAME = SQLConfigBuilder("spark.sql.parquet.histogram.col.name")
+    .doc("to be added")
+    .stringConf
+    .createWithDefault("")
+
+  val PARQUET_HISTOGRAM_BOUND_MIN = SQLConfigBuilder("spark.sql.parquet.histogram.bound.min")
+    .doc("to be added")
+    .stringConf
+    .createWithDefault("")
+
+  val PARQUET_HISTOGRAM_BOUND_MAX = SQLConfigBuilder("spark.sql.parquet.histogram.bound.max")
+    .doc("to be added")
+    .stringConf
+    .createWithDefault("")
+
+  val PARQUET_HISTOGRAM_BUCKETS_NUMBER = SQLConfigBuilder("spark.sql.parquet.histogram.buckets.num")
+    .doc("to be added")
+    .stringConf
+    .createWithDefault("")
+
   val ORC_FILTER_PUSHDOWN_ENABLED = SQLConfigBuilder("spark.sql.orc.filterPushdown")
     .doc("When true, enable filter pushdown for ORC files.")
     .booleanConf
@@ -664,6 +689,16 @@ private[sql] class SQLConf extends Serializable with CatalystConf with Logging {
   def parquetBloomFilterExpectedEntries: String = getConf(PARQUET_BLOOM_FILTER_EXPECTED_ENTRIES)
 
   def parquetBloomFilterColNames: String = getConf(PARQUET_BLOOM_FILTER_COL_NAME)
+
+  def enableParquetHistogram: Boolean = getConf(PARQUET_ENABLE_HISTOGRAM)
+
+  def parquetHistogramColNames: String = getConf(PARQUET_HISTOGRAM_COL_NAME)
+
+  def parquetHistogramBoundMin: String = getConf(PARQUET_HISTOGRAM_BOUND_MIN)
+
+  def parquetHistogramBoundMax: String = getConf(PARQUET_HISTOGRAM_BOUND_MAX)
+
+  def parquetHistogramBucketsNum: String = getConf(PARQUET_HISTOGRAM_BUCKETS_NUMBER)
 
   def columnNameOfCorruptRecord: String = getConf(COLUMN_NAME_OF_CORRUPT_RECORD)
 
