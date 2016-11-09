@@ -55,6 +55,19 @@ class ParquetQuerySuite extends QueryTest with ParquetTest with SharedSQLContext
     }
   }
 
+  test("test histogram queries") {
+    withSQLConf(SQLConf.PARQUET_ENABLE_HISTOGRAM.key -> true.toString,
+      SQLConf.PARQUET_HISTOGRAM_COL_NAME.key -> "_1",
+      SQLConf.PARQUET_HISTOGRAM_BOUND_MIN.key -> "0",
+      SQLConf.PARQUET_HISTOGRAM_BOUND_MAX.key -> "10",
+      SQLConf.PARQUET_HISTOGRAM_BUCKETS_NUMBER.key -> "5") {
+      withParquetTable((0 until 10).map(i => (i, i.toString)), "t") {
+        checkAnswer(sql("SELECT _1 FROM t as tmp where tmp._1 > 5"),
+          (6 until 10).map(Row.apply(_)))
+      }
+    }
+  }
+
   test("appending") {
     val data = (0 until 10).map(i => (i, i.toString))
     spark.createDataFrame(data).toDF("c1", "c2").createOrReplaceTempView("tmp")

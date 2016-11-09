@@ -134,19 +134,19 @@ class ParquetFileFormat
     conf.set(ParquetOutputFormat.EXPECTED_ENTRIES,
       sparkSession.sessionState.conf.parquetBloomFilterExpectedEntries.toString)
 
-    conf.set(ParquetFileFormat.ENABLE_HISTOGRAM ,
+    conf.set(ParquetOutputFormat.ENABLE_HISTOGRAM,
       sparkSession.sessionState.conf.enableParquetHistogram.toString)
 
     conf.set(ParquetOutputFormat.HISTOGRAM_COL_NAME,
       sparkSession.sessionState.conf.parquetHistogramColNames.toString)
 
-    conf.set(ParquetFileFormat.BOUND_MIN,
+    conf.set(ParquetOutputFormat.BOUND_MIN,
       sparkSession.sessionState.conf.parquetHistogramBoundMin.toString)
 
-    conf.set(ParquetFileFormat.BOUND_MAX,
+    conf.set(ParquetOutputFormat.BOUND_MAX,
       sparkSession.sessionState.conf.parquetHistogramBoundMax.toString)
 
-    conf.set(ParquetFileFormat.BUCKETS_NUMBER,
+    conf.set(ParquetOutputFormat.BUCKETS_NUMBER,
       sparkSession.sessionState.conf.parquetHistogramBucketsNum.toString)
 
     // SPARK-15719: Disables writing Parquet summary files by default.
@@ -505,15 +505,15 @@ private[parquet] class ParquetOutputWriterFactory(
     conf.set(ParquetOutputFormat.EXPECTED_ENTRIES, sqlConf.parquetBloomFilterExpectedEntries
         .toString)
 
-    conf.set(ParquetFileFormat.ENABLE_HISTOGRAM , sqlConf.enableParquetHistogram.toString)
+    conf.set(ParquetOutputFormat.ENABLE_HISTOGRAM, sqlConf.enableParquetHistogram.toString)
 
     conf.set(ParquetOutputFormat.HISTOGRAM_COL_NAME, sqlConf.parquetHistogramColNames.toString)
 
-    conf.set(ParquetFileFormat.BOUND_MIN, sqlConf.parquetHistogramBoundMin.toString)
+    conf.set(ParquetOutputFormat.BOUND_MIN, sqlConf.parquetHistogramBoundMin.toString)
 
-    conf.set(ParquetFileFormat.BOUND_MAX, sqlConf.parquetHistogramBoundMax.toString)
+    conf.set(ParquetOutputFormat.BOUND_MAX, sqlConf.parquetHistogramBoundMax.toString)
 
-    conf.set(ParquetFileFormat.BUCKETS_NUMBER, sqlConf.parquetHistogramBucketsNum.toString)
+    conf.set(ParquetOutputFormat.BUCKETS_NUMBER, sqlConf.parquetHistogramBucketsNum.toString)
 
     new SerializableConfiguration(conf)
   }
