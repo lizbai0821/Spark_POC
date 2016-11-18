@@ -29,10 +29,11 @@ import org.apache.spark.sql.sources.Filter
 import org.apache.spark.util.SerializableConfiguration
 
 
-case class RowGroupHistogramInfo[T](
-                                     filePath: String,
-                                     start: Long, end: Long,
-                                     histograms: Map[String, HistogramStatistics[T]])
+case class RowGroupHistogramInfo(
+               filePath: String,
+               start: Long, length: Long,
+               histograms: collection.mutable.HashMap[String,
+                 HistogramStatistics[Long]])
 
 object ParquetHistogramUtil {
 
@@ -79,9 +80,9 @@ object ParquetHistogramUtil {
   }
 
   def getRowGroupHistogramInfoSeq(
-                                   filesToTouch: Seq[FileStatus],
-                                   sparkSession: SparkSession,
-                                   filter: Filter): Seq[RowGroupHistogramInfo[Long]] = {
+                       filesToTouch: Seq[FileStatus],
+                       sparkSession: SparkSession,
+                       targetColumnNames: Set[String]): Seq[RowGroupHistogramInfo] = {
     val assumeBinaryIsString = sparkSession.sessionState.conf.isParquetBinaryAsString
     val assumeInt96IsTimestamp = sparkSession.sessionState.conf.isParquetINT96AsTimestamp
     val writeLegacyParquetFormat = sparkSession.sessionState.conf.writeLegacyParquetFormat
@@ -105,11 +106,8 @@ object ParquetHistogramUtil {
     val numParallelism = Math.min(Math.max(partialFileStatusInfo.size, 1),
       sparkSession.sparkContext.defaultParallelism)
 
-    val targetFilterColumnName = getFilterObjects(filter).map(x => x.columnName)
-
-
     // Issues a Spark job to read Parquet schema in parallel.
-    val partiallyMergedSchemas =
+    val getAllFooters =
     sparkSession
       .sparkContext
       .parallelize(partialFileStatusInfo, numParallelism)
@@ -129,27 +127,27 @@ object ParquetHistogramUtil {
         ParquetFileReader.readAllFootersInParallel(
           serializedConf.value, fakeFileStatuses.asJava, skipRowGroups).asScala
 
-        // Converter used to convert Parquet `MessageType` to Spark SQL `StructType`
-        val converter =
-        new ParquetSchemaConverter(
-          assumeBinaryIsString = assumeBinaryIsString,
-          assumeInt96IsTimestamp = assumeInt96IsTimestamp,
-          writeLegacyParquetFormat = writeLegacyParquetFormat)
-
         if (footers.isEmpty) {
           Iterator.empty
         } else {
           footers.flatMap({ footer =>
             val blocks: Seq[BlockMetaData] = footer.getParquetMetadata.getBlocks.asScala
-            blocks.map({ block =>
+            blocks.map({block =>
+              val filePath = block.getPath()
+              val start = block.getStartingPos()
+              val length = block.getTotalByteSize()
 
+              val map = scala.collection.mutable.HashMap.empty[String, HistogramStatistics[Long]]
+              for(x <- block.getColumns().asScala) {
+                val colName = x.getPath().toString().substring(1, x.getPath().toString().length() - 1)
+                if (targetColumnNames.contains(colName)) {
+                  map += (colName -> x.getStatistics().asInstanceOf[HistogramStatistics[Long]])
+                }
+              }
+              RowGroupHistogramInfo(filePath, start, length, map)
             })
-            Seq()
-          })
-          Iterator.single()
+          }).toIterator
         }
       }.collect()
-
-      Nil
     }
   }
