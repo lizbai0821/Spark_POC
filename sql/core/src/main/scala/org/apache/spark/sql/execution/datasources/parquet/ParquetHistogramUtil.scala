@@ -1,38 +1,56 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 package org.apache.spark.sql.execution.datasources.parquet
-
 
 import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.parquet.column.statistics.histogram.HistogramStatistics
 import org.apache.parquet.filter2.statisticslevel.InRange
-import org.apache.parquet.hadoop.metadata.BlockMetaData
 import org.apache.parquet.hadoop.{Footer, ParquetFileReader}
-import org.apache.spark.SparkException
+import org.apache.parquet.hadoop.metadata.BlockMetaData
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
 
+case class RowGroupHistogramInfo[T](
+                                     filePath: String,
+                                     start: Long, end: Long,
+                                     histograms: Map[String, HistogramStatistics[T]])
 
-case class RowGroupHistogramInfo[T](filePath: String, start: Long, end: Long, histograms: Map[String, HistogramStatistics[T]])
+object ParquetHistogramUtil {
 
-object ParquetHistogramUtil{
-
-  def getFilterObjects(filters:Filter): Iterable[InRange] = {
+  def getFilterObjects(filters: Filter): Iterable[InRange] = {
     val planText: String = filters.toString
     val gt = """GreaterThan\((\w),(\d*)\)""".r
     val lt = """LessThan\((\w),(\d*)\)""".r
     val equal = """EqualTo\((\w),(\d*)\)""".r
 
-    //A map where key = column name , value = [low bound, up bound]
+    // A map where key = column name , value = [low bound, up bound]
     val gt_lt_map = collection.mutable.HashMap.empty[String, (Long, Long)]
 
-    //lower bound
+    // lower bound
     for (x <- gt.findAllMatchIn(planText)) {
       gt_lt_map += (x.group(0) -> (x.group(1).toLong, Long.MaxValue))
     }
 
-    //upper bound
+    // upper bound
     for (x <- lt.findAllMatchIn(planText)) {
       val columnName = x.group(0)
       val tmp = gt_lt_map(columnName)
@@ -50,7 +68,7 @@ object ParquetHistogramUtil{
       inRange
     })
 
-    val equal_inRange = equal.findAllMatchIn(planText).map({ x=>
+    val equal_inRange = equal.findAllMatchIn(planText).map({ x =>
       val inRange = new InRange(x.group(0))
       inRange.setLower(x.group(1).toLong)
       inRange.setUpper(x.group(1).toLong)
@@ -61,9 +79,9 @@ object ParquetHistogramUtil{
   }
 
   def getRowGroupHistogramInfoSeq(
-                              filesToTouch: Seq[FileStatus],
-                              sparkSession: SparkSession,
-                              filter: Filter): Seq[RowGroupHistogramInfo] = {
+                                   filesToTouch: Seq[FileStatus],
+                                   sparkSession: SparkSession,
+                                   filter: Filter): Seq[RowGroupHistogramInfo[Long]] = {
     val assumeBinaryIsString = sparkSession.sessionState.conf.isParquetBinaryAsString
     val assumeInt96IsTimestamp = sparkSession.sessionState.conf.isParquetINT96AsTimestamp
     val writeLegacyParquetFormat = sparkSession.sessionState.conf.writeLegacyParquetFormat
@@ -87,7 +105,8 @@ object ParquetHistogramUtil{
     val numParallelism = Math.min(Math.max(partialFileStatusInfo.size, 1),
       sparkSession.sparkContext.defaultParallelism)
 
-    val targetFilterColumnName = filter\
+    val targetFilterColumnName = getFilterObjects(filter).map(x => x.columnName)
+
 
     // Issues a Spark job to read Parquet schema in parallel.
     val partiallyMergedSchemas =
@@ -103,7 +122,7 @@ object ParquetHistogramUtil{
         // Skips row group information since we only need the schema
         val skipRowGroups = false
 
-        import collection.JavaConversions._
+        import scala.collection.JavaConverters._
 
         // Reads footers in multi-threaded manner within each task
         val footers: Seq[Footer] =
@@ -120,40 +139,17 @@ object ParquetHistogramUtil{
         if (footers.isEmpty) {
           Iterator.empty
         } else {
-          footers.flatMap({footer =>
+          footers.flatMap({ footer =>
             val blocks: Seq[BlockMetaData] = footer.getParquetMetadata.getBlocks.asScala
-            blocks.map({block =>
+            blocks.map({ block =>
 
             })
             Seq()
           })
+          Iterator.single()
         }
-        Iterator.single(mergedSchema)
-      }
-    }.collect()
+      }.collect()
 
-    if (partiallyMergedSchemas.isEmpty) {
-      None
-    } else {
-      var finalSchema = partiallyMergedSchemas.head
-      partiallyMergedSchemas.tail.foreach { schema =>
-        try {
-          finalSchema = finalSchema.merge(schema)
-        } catch { case cause: SparkException =>
-          throw new SparkException(
-            s"Failed merging schema:\n${schema.treeString}", cause)
-        }
-      }
-      Some(finalSchema)
+      Nil
     }
   }
-}
-getFooters(){
-  /**
-    * ask executor get footer and [RowGroupHistogramInfo]
-    *
-    * then sort the RowGroupHistogramInfo according to `where` clauses
-    *
-    * Return a list of [FilePartition], each FilePartiton == RowGroup
-    */
-}
