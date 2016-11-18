@@ -1,30 +1,30 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.apache.spark.sql.execution.datasources.parquet
 
-import org.apache.hadoop.fs.{FileStatus, Path}
+import org.apache.hadoop.fs.{BlockLocation, FileStatus, Path}
 import org.apache.parquet.column.statistics.histogram.HistogramStatistics
 import org.apache.parquet.filter2.statisticslevel.InRange
 import org.apache.parquet.hadoop.{Footer, ParquetFileReader}
 import org.apache.parquet.hadoop.metadata.BlockMetaData
 
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.execution.datasources.{PartitionedFile, FilePartition}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.util.SerializableConfiguration
 
@@ -33,11 +33,18 @@ case class RowGroupHistogramInfo(
                filePath: String,
                start: Long, length: Long,
                histograms: collection.mutable.HashMap[String,
-                 HistogramStatistics[Long]])
+                 HistogramStatistics[Long]],
+               hosts: Array[String])
 
 object ParquetHistogramUtil {
 
-  def getFilterObjects(filters: Filter): Iterable[InRange] = {
+  /**
+    * Function to get [InRange] object lists by [Filter]
+    *
+    * @param filters
+    * @return
+    */
+  def getFilterObjects(filters: Filter): Seq[InRange] = {
     val planText: String = filters.toString
     val gt = """GreaterThan\((\w),(\d*)\)""".r
     val lt = """LessThan\((\w),(\d*)\)""".r
@@ -76,13 +83,21 @@ object ParquetHistogramUtil {
       inRange
     })
 
-    gt_lt_inRange ++ equal_inRange
+    (gt_lt_inRange ++ equal_inRange).toSeq
   }
 
+  /**
+    * Function to get a list of Row Group by parquet files
+    *
+    * @param filesToTouch
+    * @param sparkSession
+    * @return
+    */
   def getRowGroupHistogramInfoSeq(
                        filesToTouch: Seq[FileStatus],
                        sparkSession: SparkSession,
-                       targetColumnNames: Set[String]): Seq[RowGroupHistogramInfo] = {
+                       targetColumnNames: Set[String])
+                            : Seq[RowGroupHistogramInfo] = {
     val assumeBinaryIsString = sparkSession.sessionState.conf.isParquetBinaryAsString
     val assumeInt96IsTimestamp = sparkSession.sessionState.conf.isParquetINT96AsTimestamp
     val writeLegacyParquetFormat = sparkSession.sessionState.conf.writeLegacyParquetFormat
@@ -107,7 +122,6 @@ object ParquetHistogramUtil {
       sparkSession.sparkContext.defaultParallelism)
 
     // Issues a Spark job to read Parquet schema in parallel.
-    val getAllFooters =
     sparkSession
       .sparkContext
       .parallelize(partialFileStatusInfo, numParallelism)
@@ -139,15 +153,72 @@ object ParquetHistogramUtil {
 
               val map = scala.collection.mutable.HashMap.empty[String, HistogramStatistics[Long]]
               for(x <- block.getColumns().asScala) {
-                val colName = x.getPath().toString().substring(1, x.getPath().toString().length() - 1)
+                val colName = x.getPath().toString()
+                  .substring(1, x.getPath().toString().length() - 1)
                 if (targetColumnNames.contains(colName)) {
                   map += (colName -> x.getStatistics().asInstanceOf[HistogramStatistics[Long]])
                 }
               }
-              RowGroupHistogramInfo(filePath, start, length, map)
+
+              // Get Host here
+
+              RowGroupHistogramInfo(filePath, start, length, map, Array())
             })
           }).toIterator
         }
       }.collect()
-    }
   }
+
+  /**
+    * Sorting the a list of [RowGroupHistogramInfo] given the critera
+    *
+    * @param rowGroups
+    * @param inRanges
+    * @return
+    */
+  def sortingRowGroups(rowGroups: Seq[RowGroupHistogramInfo],
+                       inRanges: Seq[InRange]): Seq[RowGroupHistogramInfo] = {
+    val record_rowGroup_list = rowGroups.map({rowGroup =>
+      val histograms = rowGroup.histograms
+
+      /*
+      loop through inRanges
+      foreach column in inRange, find the # of records through statistic
+      sort the ret and get lowest # of records to represent the RowGroup
+
+      sort the RowGroups by the # of records
+       */
+      val records_column = inRanges.map({column =>
+        val histogram = histograms(column.columnName)
+        (histogram.Quality(column.getLower, column.getUpper), column)
+      })
+
+      val minRecord = records_column.minBy(_._1)._1
+
+      (minRecord, rowGroup)
+
+    })
+
+    record_rowGroup_list.sortBy(_._1).map(_._2)
+  }
+
+  /**
+    * Converting rowGroups to FilePartition
+    * @param rowGroups
+    * @param partitionValue
+    * @return
+    */
+  def convertRowGroupsToFilePartition(rowGroups: Array[RowGroupHistogramInfo],
+                                      partitionValue: InternalRow): Seq[FilePartition] = {
+
+    rowGroups.zipWithIndex.map({rowGroupAndIndex =>
+      val rowGroup = rowGroupAndIndex._1
+      val index = rowGroupAndIndex._2
+
+      FilePartition(index,
+                    PartitionedFile(partitionValue, rowGroup.filePath,
+                      rowGroup.start, rowGroup.length, rowGroup.hosts)::Nil)
+    })
+  }
+
+}
