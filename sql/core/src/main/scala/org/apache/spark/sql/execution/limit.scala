@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.execution
 
+import java.util.UUID
+
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.InternalRow
@@ -24,6 +26,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode, LazilyGeneratedOrdering}
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.execution.exchange.ShuffleExchange
+import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.util.Utils
 
 
@@ -164,5 +167,102 @@ case class TakeOrderedAndProjectExec(
     val outputString = Utils.truncatedString(output, "[", ",", "]")
 
     s"TakeOrderedAndProject(limit=$limit, orderBy=$orderByString, output=$outputString)"
+  }
+}
+
+case class GlobalEarlyStopLimitExec(
+    limit: Int,
+    child: SparkPlan) extends UnaryExecNode with CodegenSupport {
+  override def output: Seq[Attribute] = child.output
+
+  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+
+  override def outputPartitioning: Partitioning = child.outputPartitioning
+
+  // There is no early stop in non-codegen
+  protected override def doExecute(): RDD[InternalRow] = child.execute().mapPartitions { iter =>
+    iter.take(limit)
+  }
+
+  override def inputRDDs(): Seq[RDD[InternalRow]] = {
+    child.asInstanceOf[CodegenSupport].inputRDDs()
+  }
+
+  // Variable Name for early stop
+  var stopEarly: String = null
+  var localCount: String = null
+  var globalLimitCount: String = null
+
+  protected override def doProduce(ctx: CodegenContext): String = {
+
+    // A endPoint name for [EarlyStopLimitRpcEndpoint]
+    val endPointName = "earlyStop_" + UUID.randomUUID()
+
+    // register RpcEndpoint
+    sparkContext.env.rpcEnv.setupEndpoint(endPointName, new EarlyStopLimitRpcEndpoint(sparkContext))
+
+    stopEarly = ctx.freshName("stopEarly")
+    ctx.addMutableState("boolean", stopEarly, s"$stopEarly = false;")
+
+    localCount = ctx.freshName("count")
+    ctx.addMutableState("long", localCount, s"$localCount = 0;")
+
+    // global limit count. Get before while loop
+    globalLimitCount = ctx.freshName("globalCount")
+    ctx.addMutableState("long", globalLimitCount, s"$globalLimitCount = getGlobalLimitCount();")
+
+    ctx.addNewFunction("getGlobalLimitCount",
+      s"""
+         | protected long getGlobalLimitCount() {
+         |   long count = org.apache.spark.sql.execution.EarlyStopLimitRpcEndpoint
+         |                    .ask("$endPointName");
+         |   if(count >= $limit) {
+         |     setStopEarly();
+         |   }
+         |   System.out.println("DEBUG: " + count);
+         |   return 0L;
+         | }
+       """.stripMargin)
+
+    ctx.addNewFunction("updateGlobalLimitCount",
+      s"""
+         | protected void updateGlobalLimitCount() {
+         |    System.out.println("DEBUG: local count: " + $localCount +
+         |                    "Global count: " + $globalLimitCount);
+         |   org.apache.spark.sql.execution.EarlyStopLimitRpcEndpoint
+         |                     .send("$endPointName", $localCount);
+         | }
+       """.stripMargin)
+
+    // TODO: clean up Early stop clean up
+    ctx.addNewFunction("setStopEarly",
+      s"""
+         | protected void setStopEarly() {
+         |   System.out.println("Early Stop now");
+         |   $stopEarly = true;
+         | }
+       """.stripMargin)
+
+    s"""
+       | if(!$stopEarly) {
+       |   ${child.asInstanceOf[CodegenSupport].produce(ctx, this)}
+       |   updateGlobalLimitCount();
+       |  }else {
+       |    return ;
+       |  }
+     """.stripMargin
+  }
+
+  override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
+
+    s"""
+       | if ($localCount + $globalLimitCount < $limit) {
+       |   $localCount += 1;
+       |   ${consume(ctx, input)}
+       | } else {
+       |   setStopEarly();
+       |   break;
+       | }
+     """.stripMargin
   }
 }

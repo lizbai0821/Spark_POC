@@ -52,6 +52,8 @@ class SQLMetric(val metricType: String, initValue: Long = 0L) extends Accumulato
 
   def +=(v: Long): Unit = _value += v
 
+  def javaValue(): java.lang.Long = java.lang.Long.valueOf(_value)
+
   override def value: Long = _value
 
   // Provide special identifier as metadata so we can tell that this is a `SQLMetric` later
