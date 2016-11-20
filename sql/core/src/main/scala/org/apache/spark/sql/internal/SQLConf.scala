@@ -284,6 +284,11 @@ object SQLConf {
     .stringConf
     .createWithDefault("")
 
+  val PARQUET_HISTOGRAM_OPTIMIZATION = SQLConfigBuilder("spark.sql.parquet.histogram.optimization")
+    .doc("use histogram info to sort the row groups to read")
+    .booleanConf
+    .createWithDefault(false)
+
   val ORC_FILTER_PUSHDOWN_ENABLED = SQLConfigBuilder("spark.sql.orc.filterPushdown")
     .doc("When true, enable filter pushdown for ORC files.")
     .booleanConf
@@ -699,6 +704,8 @@ private[sql] class SQLConf extends Serializable with CatalystConf with Logging {
   def parquetHistogramBoundMax: String = getConf(PARQUET_HISTOGRAM_BOUND_MAX)
 
   def parquetHistogramBucketsNum: String = getConf(PARQUET_HISTOGRAM_BUCKETS_NUMBER)
+
+  def parquetHistogramOptimization: Boolean = getConf(PARQUET_HISTOGRAM_OPTIMIZATION)
 
   def columnNameOfCorruptRecord: String = getConf(COLUMN_NAME_OF_CORRUPT_RECORD)
 

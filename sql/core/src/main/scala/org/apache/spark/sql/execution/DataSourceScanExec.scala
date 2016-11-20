@@ -17,26 +17,26 @@
 
 package org.apache.spark.sql.execution
 
-import scala.collection.mutable.ArrayBuffer
-
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.{BlockLocation, FileStatus, LocatedFileStatus, Path}
-
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{Row, SparkSession, SQLContext}
-import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
-import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.execution.datasources._
-import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat => ParquetSource}
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetHistogramUtil, ParquetFileFormat => ParquetSource}
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.{BaseRelation, Filter}
 import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.util.Utils
+
+import scala.collection.mutable.ArrayBuffer
+// import scala.collection.mutable.ArrayBuffer
 
 trait DataSourceScanExec extends LeafExecNode with CodegenSupport {
   val relation: BaseRelation
@@ -199,12 +199,24 @@ case class FileSourceScanExec(
         options = relation.options,
         hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options))
 
-    relation.bucketSpec match {
-      case Some(bucketing) if relation.sparkSession.sessionState.conf.bucketingEnabled =>
-        createBucketedReadRDD(bucketing, readFile, selectedPartitions, relation)
-      case _ =>
-        createNonBucketedReadRDD(readFile, selectedPartitions, relation)
+    if (relation.sparkSession.conf.get(SQLConf.PARQUET_HISTOGRAM_OPTIMIZATION.key).toBoolean){
+      createParquetHistogramInputRDD(readFile, selectedPartitions, relation)
     }
+    else{
+      relation.bucketSpec match {
+        /*
+      case _ =>
+        createParquetHistogramInputRDD(readFile, selectedPartitions, relation)
+        */
+
+        case Some(bucketing) if relation.sparkSession.sessionState.conf.bucketingEnabled =>
+          createBucketedReadRDD(bucketing, readFile, selectedPartitions, relation)
+        case _ =>
+          createNonBucketedReadRDD(readFile, selectedPartitions, relation)
+
+      }
+    }
+
   }
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
@@ -469,6 +481,54 @@ case class FileSourceScanExec(
     new FileScanRDD(fsRelation.sparkSession, readFile, partitions)
   }
 
+  /**
+    * Create an RDD for non-bucketed reads.
+    * The bucketed variant of this function is [[createBucketedReadRDD]].
+    *
+    * @param readFile a function to read each (part of a) file.
+    * @param selectedPartitions Hive-style partition that are part of the read.
+    * @param fsRelation [[HadoopFsRelation]] associated with the read.
+    */
+  private def createParquetHistogramInputRDD(
+                                        readFile: (PartitionedFile) => Iterator[InternalRow],
+                                        selectedPartitions: Seq[Partition],
+                                        fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+    val defaultMaxSplitBytes =
+      fsRelation.sparkSession.sessionState.conf.filesMaxPartitionBytes
+    val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
+    val defaultParallelism = fsRelation.sparkSession.sparkContext.defaultParallelism
+    val totalBytes = selectedPartitions.flatMap(_.files.map(_.getLen + openCostInBytes)).sum
+    val bytesPerCore = totalBytes / defaultParallelism
+
+    val maxSplitBytes = Math.min(defaultMaxSplitBytes, Math.max(openCostInBytes, bytesPerCore))
+    logInfo(s"Planning scan with bin packing, max size: $maxSplitBytes bytes, " +
+      s"open cost is considered as scanning $openCostInBytes bytes.")
+
+    val inRanges = ParquetHistogramUtil.getFilterObjects(dataFilters(0))
+
+    val colNames = inRanges.map(_.columnName).toSet
+
+    val rowGroups = selectedPartitions.flatMap { partition =>
+      val _rowGroups = ParquetHistogramUtil.getRowGroupHistogramInfoSeq(partition.files,
+        SparkSession.getActiveSession.get, colNames, partition.values)
+      // Mapping for RowGroup path and FileStatus
+      val mapping = partition.files.map(file => file.getPath.getName -> file).toMap
+      _rowGroups.map({rowGroup =>
+        val fileStatus = mapping(rowGroup.fileName)
+        rowGroup.hosts = getBlockHosts(getBlockLocations(
+          fileStatus), rowGroup.start, rowGroup.length)
+        rowGroup.filePath = fileStatus.getPath.toUri().toString()
+        rowGroup
+      })
+    }
+
+    val sortedRowGroups = ParquetHistogramUtil.sortingRowGroups(rowGroups, inRanges, dataFilters(0))
+
+    new FileScanRDD(fsRelation.sparkSession, readFile,
+      ParquetHistogramUtil.convertRowGroupsToFilePartition(sortedRowGroups))
+  }
+
+
   private def getBlockLocations(file: FileStatus): Array[BlockLocation] = file match {
     case f: LocatedFileStatus => f.getBlockLocations
     case f => Array.empty[BlockLocation]
@@ -519,3 +579,4 @@ case class FileSourceScanExec(
     case _ => false
   }
 }
+

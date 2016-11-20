@@ -16,53 +16,53 @@
  */
 package org.apache.spark.sql.execution.datasources.parquet
 
-import org.apache.hadoop.fs.{BlockLocation, FileStatus, Path}
+import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.parquet.column.statistics.histogram.HistogramStatistics
 import org.apache.parquet.filter2.statisticslevel.InRange
 import org.apache.parquet.hadoop.{Footer, ParquetFileReader}
 import org.apache.parquet.hadoop.metadata.BlockMetaData
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.execution.datasources.{PartitionedFile, FilePartition}
-import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
+import org.apache.spark.sql.sources.{And, Filter}
 import org.apache.spark.util.SerializableConfiguration
 
 
 case class RowGroupHistogramInfo(
-               filePath: String,
-               start: Long, length: Long,
-               histograms: collection.mutable.HashMap[String,
+                                  fileName: String,
+                                  var filePath: String,
+                                  start: Long, length: Long,
+                                  histograms: collection.mutable.HashMap[String,
                  HistogramStatistics[Long]],
-               hosts: Array[String])
+                                  var hosts: Array[String],
+                                  partitionValue: InternalRow)
 
 object ParquetHistogramUtil {
 
   /**
     * Function to get [InRange] object lists by [Filter]
-    *
-    * @param filters
+     @param filters
     * @return
     */
   def getFilterObjects(filters: Filter): Seq[InRange] = {
     val planText: String = filters.toString
-    val gt = """GreaterThan\((\w),(\d*)\)""".r
-    val lt = """LessThan\((\w),(\d*)\)""".r
-    val equal = """EqualTo\((\w),(\d*)\)""".r
+    val gt = """GreaterThan\((\w*),(\d*)\)""".r
+    val lt = """LessThan\((\w*),(\d*)\)""".r
+    val equal = """EqualTo\((\w*),(\d*)\)""".r
 
     // A map where key = column name , value = [low bound, up bound]
     val gt_lt_map = collection.mutable.HashMap.empty[String, (Long, Long)]
 
     // lower bound
     for (x <- gt.findAllMatchIn(planText)) {
-      gt_lt_map += (x.group(0) -> (x.group(1).toLong, Long.MaxValue))
+      gt_lt_map += (x.group(1) -> (x.group(2).toLong, Long.MaxValue))
     }
 
     // upper bound
     for (x <- lt.findAllMatchIn(planText)) {
-      val columnName = x.group(0)
+      val columnName = x.group(1)
       val tmp = gt_lt_map(columnName)
-      gt_lt_map += (columnName -> (tmp._1, x.group(1).toLong))
+      gt_lt_map += (columnName -> (tmp._1, x.group(2).toLong))
     }
 
     val gt_lt_inRange = gt_lt_map.map({ k_v =>
@@ -77,9 +77,9 @@ object ParquetHistogramUtil {
     })
 
     val equal_inRange = equal.findAllMatchIn(planText).map({ x =>
-      val inRange = new InRange(x.group(0))
-      inRange.setLower(x.group(1).toLong)
-      inRange.setUpper(x.group(1).toLong)
+      val inRange = new InRange(x.group(1))
+      inRange.setLower(x.group(2).toLong)
+      inRange.setUpper(x.group(2).toLong)
       inRange
     })
 
@@ -88,7 +88,6 @@ object ParquetHistogramUtil {
 
   /**
     * Function to get a list of Row Group by parquet files
-    *
     * @param filesToTouch
     * @param sparkSession
     * @return
@@ -96,7 +95,8 @@ object ParquetHistogramUtil {
   def getRowGroupHistogramInfoSeq(
                        filesToTouch: Seq[FileStatus],
                        sparkSession: SparkSession,
-                       targetColumnNames: Set[String])
+                       targetColumnNames: Set[String],
+                       partitionValue: InternalRow)
                             : Seq[RowGroupHistogramInfo] = {
     val assumeBinaryIsString = sparkSession.sessionState.conf.isParquetBinaryAsString
     val assumeInt96IsTimestamp = sparkSession.sessionState.conf.isParquetINT96AsTimestamp
@@ -146,8 +146,8 @@ object ParquetHistogramUtil {
         } else {
           footers.flatMap({ footer =>
             val blocks: Seq[BlockMetaData] = footer.getParquetMetadata.getBlocks.asScala
+            val fileName = footer.getFile.getName();
             blocks.map({block =>
-              val filePath = block.getPath()
               val start = block.getStartingPos()
               val length = block.getTotalByteSize()
 
@@ -162,12 +162,51 @@ object ParquetHistogramUtil {
 
               // Get Host here
 
-              RowGroupHistogramInfo(filePath, start, length, map, Array())
+              RowGroupHistogramInfo(fileName, "", start, length, map, Array(), partitionValue)
             })
           }).toIterator
         }
       }.collect()
   }
+
+  /**
+    *
+    * @param inRanges
+    * @param colName
+    * @param histogram
+    * @return the quality of a single colName
+    */
+  def getQuality(inRanges: Seq[InRange],
+                 colName: String,
+                 histogram: HistogramStatistics[Long]): Long = {
+    var histogram_ret:Long=0L
+    for(inrange <- inRanges if inrange.columnName==colName){
+        histogram_ret=histogram.Quality(inrange.getLower, inrange.getUpper)
+    }
+    histogram_ret
+  }
+
+  /**
+    *
+    * @param inRanges
+    * @param histograms
+    * @param filters
+    * @return pattern matching to get the quality of the all columns in a row group
+    *         recursively, according to the filters
+    *
+    *         [CAUTIOUS] we only consider the query with Eq,Lt,Gt conditions here
+    */
+  def sumQuality(inRanges: Seq[InRange],
+                 histograms: collection.mutable.HashMap[String, HistogramStatistics[Long]],
+                 filters: Filter): Long = filters match{
+    case org.apache.spark.sql.sources.And(left, right) => Math.min(sumQuality(inRanges, histograms, left), sumQuality(inRanges, histograms, right))
+    case org.apache.spark.sql.sources.Or(left, right) => Math.max(sumQuality(inRanges, histograms, left), sumQuality(inRanges, histograms, right))
+    case org.apache.spark.sql.sources.GreaterThan(attribute,value) => getQuality(inRanges, attribute, histograms(attribute))
+    case org.apache.spark.sql.sources.LessThan(attribute, value) => getQuality(inRanges, attribute, histograms(attribute))
+    case org.apache.spark.sql.sources.EqualTo(attribute, value) => getQuality(inRanges, attribute, histograms(attribute))
+    case _ => 0L
+  }
+
 
   /**
     * Sorting the a list of [RowGroupHistogramInfo] given the critera
@@ -177,7 +216,7 @@ object ParquetHistogramUtil {
     * @return
     */
   def sortingRowGroups(rowGroups: Seq[RowGroupHistogramInfo],
-                       inRanges: Seq[InRange]): Seq[RowGroupHistogramInfo] = {
+                       inRanges: Seq[InRange], filters: Filter): Seq[RowGroupHistogramInfo] = {
     val record_rowGroup_list = rowGroups.map({rowGroup =>
       val histograms = rowGroup.histograms
 
@@ -188,35 +227,41 @@ object ParquetHistogramUtil {
 
       sort the RowGroups by the # of records
        */
+
+      val Quality = sumQuality(inRanges, histograms, filters)
+      /*
       val records_column = inRanges.map({column =>
         val histogram = histograms(column.columnName)
-        (histogram.Quality(column.getLower, column.getUpper), column)
+        val histogram_ret = histogram.Quality(column.getLower, column.getUpper)
+        (histogram_ret, column)
       })
 
       val minRecord = records_column.minBy(_._1)._1
 
       (minRecord, rowGroup)
+      */
+      (Quality ,rowGroup)
 
     })
 
-    record_rowGroup_list.sortBy(_._1).map(_._2)
+    val sorted = record_rowGroup_list.sortWith(_._1>_._1)
+    sorted.foreach(println)
+    sorted.map(_._2)
   }
 
   /**
     * Converting rowGroups to FilePartition
     * @param rowGroups
-    * @param partitionValue
     * @return
     */
-  def convertRowGroupsToFilePartition(rowGroups: Array[RowGroupHistogramInfo],
-                                      partitionValue: InternalRow): Seq[FilePartition] = {
+  def convertRowGroupsToFilePartition(rowGroups: Seq[RowGroupHistogramInfo]): Seq[FilePartition] = {
 
     rowGroups.zipWithIndex.map({rowGroupAndIndex =>
       val rowGroup = rowGroupAndIndex._1
       val index = rowGroupAndIndex._2
 
       FilePartition(index,
-                    PartitionedFile(partitionValue, rowGroup.filePath,
+                    PartitionedFile(rowGroup.partitionValue, rowGroup.filePath,
                       rowGroup.start, rowGroup.length, rowGroup.hosts)::Nil)
     })
   }
