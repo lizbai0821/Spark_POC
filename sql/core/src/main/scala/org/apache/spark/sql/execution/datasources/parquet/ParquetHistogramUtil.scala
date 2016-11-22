@@ -57,6 +57,17 @@ object ParquetHistogramUtil {
     ParquetHistogramUtil.cachedRowGroupMetadata = metadata
   }
 
+  def useHistogram(filters: Seq[Filter]): Boolean = {
+    if(filters.size == 0 )
+      return false
+    else
+      regex_gt.findAllMatchIn(filters(0).toString).size < 3
+  }
+
+  val regex_gt = """GreaterThan\((\w*),(\d*)\)""".r
+  val regex_lt = """LessThan\((\w*),(\d*)\)""".r
+  val regex_equal = """EqualTo\((\w*),(\d*)\)""".r
+
   /**
     * Function to get [InRange] object lists by [Filter]
      @param filters
@@ -64,9 +75,9 @@ object ParquetHistogramUtil {
     */
   def getFilterObjects(filters: Filter): Seq[InRange] = {
     val planText: String = filters.toString
-    val gt = """GreaterThan\((\w*),(\d*)\)""".r
-    val lt = """LessThan\((\w*),(\d*)\)""".r
-    val equal = """EqualTo\((\w*),(\d*)\)""".r
+    val gt = ParquetHistogramUtil.regex_gt
+    val lt = ParquetHistogramUtil.regex_lt
+    val equal = ParquetHistogramUtil.regex_equal
 
     // A map where key = column name , value = [low bound, up bound]
     val gt_lt_map = collection.mutable.HashMap.empty[String, (Long, Long)]
