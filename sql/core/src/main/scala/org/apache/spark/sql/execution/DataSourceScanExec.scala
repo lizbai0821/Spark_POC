@@ -511,19 +511,27 @@ case class FileSourceScanExec(
 
     val colNames = inRanges.map(_.columnName).toSet
 
-    val rowGroups = selectedPartitions.flatMap { partition =>
-      val _rowGroups = ParquetHistogramUtil.getRowGroupHistogramInfoSeq(partition.files,
-        SparkSession.getActiveSession.get, colNames, partition.values)
-      // Mapping for RowGroup path and FileStatus
-      val mapping = partition.files.map(file => file.getPath.getName -> file).toMap
-      _rowGroups.map({rowGroup =>
-        val fileStatus = mapping(rowGroup.fileName)
-        rowGroup.hosts = getBlockHosts(getBlockLocations(
-          fileStatus), rowGroup.start, rowGroup.length)
-        rowGroup.filePath = fileStatus.getPath.toUri().toString()
-        rowGroup
-      })
-    }
+    val rowGroups =
+      if(ParquetHistogramUtil.isCachedRowGroupMetadata) {
+        logInfo("Parquet row group metadata cache is used")
+        ParquetHistogramUtil.getCachedRowGroupMetadata()
+      }else{
+        val rowGroupMetadata = selectedPartitions.flatMap { partition =>
+          val _rowGroups = ParquetHistogramUtil.getRowGroupHistogramInfoSeq(partition.files,
+            SparkSession.getActiveSession.get, partition.values)
+          // Mapping for RowGroup path and FileStatus
+          val mapping = partition.files.map(file => file.getPath.getName -> file).toMap
+          _rowGroups.map({ rowGroup =>
+            val fileStatus = mapping(rowGroup.fileName)
+            rowGroup.hosts = getBlockHosts(getBlockLocations(
+              fileStatus), rowGroup.start, rowGroup.length)
+            rowGroup.filePath = fileStatus.getPath.toUri().toString()
+            rowGroup
+          })
+        }
+        ParquetHistogramUtil.setCachedRowGroupMetadata(rowGroupMetadata)
+        rowGroupMetadata
+      }
 
     val sortedRowGroups = ParquetHistogramUtil.sortingRowGroups(rowGroups, inRanges, dataFilters(0))
 

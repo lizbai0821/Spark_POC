@@ -33,11 +33,29 @@ case class RowGroupHistogramInfo(
                                   var filePath: String,
                                   start: Long, length: Long,
                                   histograms: collection.mutable.HashMap[String,
-                 HistogramStatistics[Long]],
+                                    HistogramStatistics[Long]],
                                   var hosts: Array[String],
                                   partitionValue: InternalRow)
 
 object ParquetHistogramUtil {
+
+  // RowGroupMetaData is cached here
+  private var cachedRowGroupMetadata: Seq[RowGroupHistogramInfo] = null
+
+  def isCachedRowGroupMetadata(): Boolean = {
+    if ( cachedRowGroupMetadata == null )
+      return false
+    else
+      return true
+  }
+
+  def getCachedRowGroupMetadata(): Seq[RowGroupHistogramInfo] = {
+    return cachedRowGroupMetadata
+  }
+
+  def setCachedRowGroupMetadata(metadata: Seq[RowGroupHistogramInfo]): Unit = {
+    ParquetHistogramUtil.cachedRowGroupMetadata = metadata
+  }
 
   /**
     * Function to get [InRange] object lists by [Filter]
@@ -95,7 +113,6 @@ object ParquetHistogramUtil {
   def getRowGroupHistogramInfoSeq(
                        filesToTouch: Seq[FileStatus],
                        sparkSession: SparkSession,
-                       targetColumnNames: Set[String],
                        partitionValue: InternalRow)
                             : Seq[RowGroupHistogramInfo] = {
     val assumeBinaryIsString = sparkSession.sessionState.conf.isParquetBinaryAsString
@@ -155,9 +172,7 @@ object ParquetHistogramUtil {
               for(x <- block.getColumns().asScala) {
                 val colName = x.getPath().toString()
                   .substring(1, x.getPath().toString().length() - 1)
-                if (targetColumnNames.contains(colName)) {
-                  map += (colName -> x.getStatistics().asInstanceOf[HistogramStatistics[Long]])
-                }
+                map += (colName -> x.getStatistics().asInstanceOf[HistogramStatistics[Long]])
               }
 
               // Get Host here
