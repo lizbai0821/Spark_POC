@@ -199,7 +199,10 @@ case class FileSourceScanExec(
         options = relation.options,
         hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options))
 
-    if (relation.sparkSession.conf.get(SQLConf.PARQUET_HISTOGRAM_OPTIMIZATION.key).toBoolean){
+    val gt = """GreaterThan\((\w*),(\d*)\)""".r
+    val Optimize:Boolean=gt.findAllMatchIn(dataFilters(0).toString).size>2
+
+    if (relation.sparkSession.conf.get(SQLConf.PARQUET_HISTOGRAM_OPTIMIZATION.key).toBoolean&& Optimize){
       createParquetHistogramInputRDD(readFile, selectedPartitions, relation)
     }
     else{
