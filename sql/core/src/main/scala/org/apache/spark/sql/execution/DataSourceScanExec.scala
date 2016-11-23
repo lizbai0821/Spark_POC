@@ -513,7 +513,12 @@ case class FileSourceScanExec(
     val rowGroups =
       if(ParquetHistogramUtil.isCachedRowGroupMetadata) {
         logInfo("Parquet row group metadata cache is used")
+        val targetPartitionValues = selectedPartitions.map(_.values.toString).toSet
+
+        // get Row Groups from cached and filter the partiton key
         ParquetHistogramUtil.getCachedRowGroupMetadata()
+          .filter(rowGroup => targetPartitionValues
+            .contains(rowGroup.partitionValue.toString))
       }else{
         val rowGroupMetadata = selectedPartitions.flatMap { partition =>
           val _rowGroups = ParquetHistogramUtil.getRowGroupHistogramInfoSeq(partition.files,
