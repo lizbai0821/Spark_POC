@@ -271,7 +271,6 @@ object ParquetHistogramUtil {
     })
 
     val sorted = record_rowGroup_list.sortWith(_._1>_._1)
-    sorted.foreach(println)
     sorted.map(_._2)
   }
 
@@ -291,5 +290,4 @@ object ParquetHistogramUtil {
                       rowGroup.start, rowGroup.length, rowGroup.hosts)::Nil)
     })
   }
-
 }
