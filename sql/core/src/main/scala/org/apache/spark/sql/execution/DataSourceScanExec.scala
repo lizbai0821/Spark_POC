@@ -490,6 +490,7 @@ case class FileSourceScanExec(
                                         readFile: (PartitionedFile) => Iterator[InternalRow],
                                         selectedPartitions: Seq[Partition],
                                         fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+    logInfo("Spark-dist 4. Cache footer in driver")
     val defaultMaxSplitBytes =
       fsRelation.sparkSession.sessionState.conf.filesMaxPartitionBytes
     val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
