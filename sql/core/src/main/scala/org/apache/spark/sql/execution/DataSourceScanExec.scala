@@ -201,21 +201,16 @@ case class FileSourceScanExec(
 
     val useHistogram:Boolean = ParquetHistogramUtil.useHistogram(dataFilters)
 
-    if (relation.sparkSession.conf.get(SQLConf.PARQUET_HISTOGRAM_OPTIMIZATION.key).toBoolean && useHistogram){
+    if (relation.fileFormat.isInstanceOf[ParquetSource]){
+      logInfo("Build custom parquet inputRDD, enable histogram sorting")
       createParquetHistogramInputRDD(readFile, selectedPartitions, relation)
     }
     else{
       relation.bucketSpec match {
-        /*
-      case _ =>
-        createParquetHistogramInputRDD(readFile, selectedPartitions, relation)
-        */
-
         case Some(bucketing) if relation.sparkSession.sessionState.conf.bucketingEnabled =>
           createBucketedReadRDD(bucketing, readFile, selectedPartitions, relation)
         case _ =>
           createNonBucketedReadRDD(readFile, selectedPartitions, relation)
-
       }
     }
 
