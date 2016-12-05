@@ -201,7 +201,7 @@ case class FileSourceScanExec(
 
     val useHistogram:Boolean = ParquetHistogramUtil.useHistogram(dataFilters)
 
-    if (relation.fileFormat.isInstanceOf[ParquetSource]){
+    if (relation.fileFormat.isInstanceOf[ParquetSource] && dataFilters.size > 0){
       logInfo("Build custom parquet inputRDD, enable histogram sorting")
       createParquetHistogramInputRDD(readFile, selectedPartitions, relation)
     }
